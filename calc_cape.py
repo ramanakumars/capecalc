@@ -67,7 +67,7 @@ k0 = 0
 '''
 esat = lambda T: 10.**(12.610 - 2681.18/T)
 dewpoint = lambda p, q: 2681.18/(12.610 - \
-        np.log10(q*p/(epsilon + q)) \
+        np.log10(q*p/(constants.epsilon + q)) \
     )
 
 '''
@@ -76,7 +76,7 @@ dewpoint = lambda p, q: 2681.18/(12.610 - \
     This calls the CAPE/CIN calculation
 '''
 Tparcel, CAPE, CIN, b = \
-    CAPEfuncs.do_CAPE(pij, Tij, qH2O, k0, dewpoint, esat, constants)
+    CAPEfuncs.do_CAPE(p, T, qH2O, k0, dewpoint, esat, constants)
 
 
 '''

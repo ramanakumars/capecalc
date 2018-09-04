@@ -1,3 +1,6 @@
+## Ramanakumar Sankar
+## 09/04/2018
+
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.optimize import fixed_point
