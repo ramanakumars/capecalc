@@ -1,12 +1,16 @@
-## Ramanakumar Sankar
-## 09/04/2018
-
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.optimize import fixed_point
 from scipy.integrate import odeint, quad
+import matplotlib.pyplot as plt
 from matplotlib.projections import register_projection
 
+
+
+esat = lambda T: 10.**(12.610 - 2681.18/T)
+dewpoint = lambda p, q, epsilon: 2681.18/(12.610 - \
+        np.log10(q*p/(epsilon + q)) \
+    )
 class Constants:
     def __init__(self, Ratmo, g, Cp, Rw, Lv):
         self.Ratmo = Ratmo
@@ -18,13 +22,13 @@ class Constants:
         self.Kappa = Ratmo/Cp
 
 
-def get_lcl(p, T, qH2O, k0, dewpoint, esat, constants):
+def get_lcl(p, T, qH2O, k0, constants):
     p0 = p[k0]
     t0 = T[k0]
 
     q0 =qH2O[k0]
     e0 = q0*p0/(constants.epsilon + q0)
-    dewpt0 = dewpoint(p0, q0)
+    dewpt0 = dewpoint(p0, q0, constants.epsilon)
 
     esdew0 = esat(dewpt0)
     q0 = esdew0/(p0-esdew0)*constants.epsilon
@@ -35,7 +39,7 @@ def get_lcl(p, T, qH2O, k0, dewpoint, esat, constants):
     #     return Td
 
     def lcl_min(p):
-        Td = dewpoint(p,q0)
+        Td = dewpoint(p,q0, constants.epsilon)
         # print(p, Td)
         return p0*(Td/t0)**(1./constants.Kappa)
 
@@ -56,7 +60,7 @@ def get_lcl(p, T, qH2O, k0, dewpoint, esat, constants):
 
     return (plcl, tlcl, klcl)
 
-def get_parcel_temp(p, T, k0, plcl, klcl, esat, constants):
+def get_parcel_temp(p, T, k0, q0, plcl, klcl, constants):
     p0 = p[k0]
     t0 = T[k0]
 
@@ -64,14 +68,17 @@ def get_parcel_temp(p, T, k0, plcl, klcl, esat, constants):
     ## with the dry lapse rate
 
     ## integrate upto the point before
-    Tparcel = (T[k0])*np.ones_like(p)
-    for k in range(1, klcl+1):
+    Tparcel  = (T[k0])*np.ones_like(p)
+    Xparcel  = np.zeros_like(p)
+    for k in range(0, klcl+1):
         ## dry lapse rate
         Tparcel[k] = t0*(p[k]/p0)**(constants.Ratmo/constants.Cp)
+        Xparcel[k] = q0/(constants.epsilon + q0)
+
 
     ## we then correct the remaining amount based on 
     ## how much more of the atmosphere is dry
-    Tparcel[klcl] = t0*(plcl/p0)**(constants.Ratmo/constants.Cp)
+    Tparcel[klcl+1] = t0*(plcl/p0)**(constants.Ratmo/constants.Cp)
 
     pmin = p.min()
     ## calculate the moist adiabat wrt pressure
@@ -87,6 +94,7 @@ def get_parcel_temp(p, T, k0, plcl, klcl, esat, constants):
 
     ## integrate it for all points from klcl+1 to the end
     pmoist = p[klcl:]
+    
     T0 = Tparcel[klcl]
 
     Tmoist = odeint(dTdp_moist, T0, pmoist)
@@ -95,13 +103,29 @@ def get_parcel_temp(p, T, k0, plcl, klcl, esat, constants):
     ## integrated temperature
     Tparcel[klcl:] = Tmoist[:,0]
 
-    return Tparcel
+    ### get the virtual temperature of the parcel
+    emoist = esat(Tmoist[:,0])
+    Xparcel[klcl:] = emoist/(pmoist)
+    Tvparcel = Tparcel/(1. - Xparcel*(1. - constants.epsilon))
 
-def get_CAPE_CIN(p, plcl, T, Tparcel, constants):
+    return (Tparcel, Tvparcel)
+
+def get_CAPE_CIN(p, k0, plcl, T, Tvparcel, q, constants):
+
+    ### get the virtual temperature of the atmosphere
+    Xatmo = q/(q + constants.epsilon)
+    Tv = T/(1. - Xatmo*(1. - constants.epsilon))
+
+    # plt.plot(Tv, p/100., 'k-')
+    # plt.plot(Tvparcel, p/100., 'k--')
+    # plt.ylim((10000., 1.))
+    # plt.yscale('log')
+    # plt.show()
+
     ## find the buoyancy:
-    ## b = Rdry*(Tatmo - Tparcel)
+    ## b = Rdry*(Tvatmo - Tvparcel)
     ## CAPE = integral b
-    b = constants.Ratmo*(Tparcel-T)
+    b = constants.Ratmo*(Tvparcel-Tv)
     blogp = interp1d(np.log(p), b, kind='cubic')
 
     ## we need to find the kLFC and kEL
@@ -143,18 +167,20 @@ def get_CAPE_CIN(p, plcl, T, Tparcel, constants):
         bCAPE[bCAPE < 0.] = 0.
         CAPE = -np.trapz(bCAPE, pCAPE)
 
-        pCIN  = np.linspace(np.log(p[0]), np.log(plfc), 50)
+        pCIN  = np.linspace(np.log(p[k0]), np.log(plfc), 50)
         bCIN  = blogp(pCIN)
         bCIN[bCIN > 0.] = 0.
         CIN = - np.trapz(bCIN, pCIN)
 
-    return CAPE, CIN, b
+    return CAPE, CIN, b, plfc, pel
 
-def do_CAPE(pij, Tij, qH2O, k0, dewpoint, esat, constants):
-    plcl, tlcl, klcl = get_lcl(pij, Tij, qH2O, k0, dewpoint, esat, constants)
+def do_CAPE(pij, Tij, qH2O, k0, constants):
 
-    Tparcel = get_parcel_temp(pij, Tij, k0, plcl, klcl, esat, constants)
+    plcl, tlcl, klcl = get_lcl(pij, Tij, qH2O, k0, constants)
 
-    CAPE, CIN, b = get_CAPE_CIN(pij, plcl, Tij, Tparcel, constants)
+    Tparcel, Tvparcel = get_parcel_temp(pij, Tij, k0, qH2O[k0], plcl, klcl, constants)
 
-    return Tparcel, CAPE, CIN, b
+    CAPE, CIN, b, plfc, pel = get_CAPE_CIN(pij, k0, plcl, Tij, Tvparcel, qH2O, constants)
+
+    # print(CAPE)
+    return (Tparcel, CAPE, CIN, b, plcl, plfc, pel)
